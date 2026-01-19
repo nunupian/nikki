@@ -1,21 +1,5 @@
 import React, { useEffect, useState } from "react";
 
-// Tell TypeScript that window can have XLSX
-useEffect(() => {
-  if (window.XLSX) {
-    setSheetJsLoaded(true);
-    return;
-  }
-  const id = "sheetjs-script";
-  if (document.getElementById(id)) return;
-  const s = document.createElement("script");
-  s.id = id;
-  s.src = "https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js";
-  s.onload = () => setSheetJsLoaded(true);
-  s.onerror = () => setSheetJsLoaded(false);
-  document.body.appendChild(s);
-}, []);
-
 // Add Tailwind CDN dynamically
 const addTailwindCDN = () => {
   const script = document.createElement("script");
