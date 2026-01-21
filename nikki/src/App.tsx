@@ -2,8 +2,7 @@
 import { useState, useEffect, useRef } from "react";
 import * as XLSX from "xlsx";
 
-import { signInAnonymously, onAuthStateChanged } from "firebase/auth";
-import type { User } from "firebase/auth";
+import { signInAnonymously } from "firebase/auth";
 import { doc, setDoc, onSnapshot } from "firebase/firestore";
 import { db, auth } from "./firebase";
 
@@ -21,9 +20,8 @@ interface Activity {
 
 function App() {
   /* ---------- AUTH ---------- */
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [username, setUsername] = useState("");
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [currentUsername, setCurrentUsername] = useState<string | null>(null);
 
   /* ---------- DIARY ---------- */
   const [activities, setActivities] = useState<Activity[]>([]);
@@ -166,125 +164,199 @@ function App() {
       return;
     }
 
-    const cred = await signInAnonymously(auth);
+    try {
+      await signInAnonymously(auth);
+      const cleanUsername = username.trim().toLowerCase();
+      setCurrentUsername(cleanUsername);
+      setUsername("");
+    } catch (err) {
+      console.error("Login error:", err);
+      alert("Failed to login. Please try again.");
+    }
+  };
 
-    await setDoc(
-      doc(db, "users", cred.user.uid),
-      {
-        username,
-        activities: [],
-        createdAt: new Date(),
-      },
-      { merge: true }
-    );
-
-    setIsLoggedIn(true);
+  const logout = () => {
+    setCurrentUsername(null);
+    setActivities([]);
+    resetForm();
   };
 
   /* ================= FIREBASE ================= */
 
   useEffect(() => {
-    return onAuthStateChanged(auth, (user) => {
-      if (user) {
-        setCurrentUser(user);
-        setIsLoggedIn(true);
-      }
+    signInAnonymously(auth).catch((err) => {
+      console.error("Auth error:", err);
     });
   }, []);
 
   useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUsername) return;
 
-    const ref = doc(db, "users", currentUser.uid);
+    const ref = doc(db, "users", currentUsername);
     return onSnapshot(ref, (snap) => {
       if (!snap.exists()) return;
       isRemoteUpdate.current = true;
       setActivities(sortActivities(snap.data().activities || []));
     });
-  }, [currentUser]);
+  }, [currentUsername]);
 
   useEffect(() => {
-    if (!currentUser || isRemoteUpdate.current) {
+    if (!currentUsername || isRemoteUpdate.current) {
       isRemoteUpdate.current = false;
       return;
     }
 
-    const ref = doc(db, "users", currentUser.uid);
+    const ref = doc(db, "users", currentUsername);
     const t = setTimeout(() => {
       setDoc(ref, { activities }, { merge: true });
     }, 400);
 
     return () => clearTimeout(t);
-  }, [activities, currentUser]);
+  }, [activities, currentUsername]);
 
   /* ================= UI ================= */
 
   return (
     <div className="h-screen w-screen bg-gradient-to-br from-[#FFF8F0] to-[#FFE8D6] flex flex-col overflow-hidden">
       {/* HEADER */}
-      <div className="bg-gradient-to-r from-[#38B2AC] to-[#319795] text-white px-8 py-6 shadow-lg">
-        <h1 className="text-5xl font-bold">📔 My Daily Diary</h1>
-        <p className="text-lg opacity-90">Track your daily activities</p>
+      <div className="bg-gradient-to-r from-[#38B2AC] to-[#319795] text-white px-8 py-6 shadow-lg flex-shrink-0">
+        <div className="flex justify-between items-center">
+          <div>
+            <h1 className="text-5xl font-bold">📔 My Daily Diary</h1>
+            <p className="text-lg opacity-90">Track your daily activities</p>
+          </div>
+          {currentUsername && (
+            <div className="text-right">
+              <p className="text-sm opacity-80">User:</p>
+              <p className="text-2xl font-bold">{currentUsername}</p>
+              <button
+                onClick={logout}
+                className="mt-2 bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg font-semibold"
+              >
+                🚪 Logout
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto px-8 py-8">
         {/* LOGIN */}
-        {!isLoggedIn && (
+        {!currentUsername && (
           <div className="bg-white p-8 rounded-2xl shadow-lg max-w-md mx-auto mt-20">
-            <h2 className="text-2xl font-bold mb-4">Login</h2>
+            <h2 className="text-3xl font-bold text-[#38B2AC] mb-6 text-center">
+              Welcome to Nikki Diary!
+            </h2>
+            <p className="text-gray-600 mb-4 text-center">
+              Enter your username to get started
+            </p>
             <input
-              className="w-full border px-4 py-3 rounded mb-4"
+              className="w-full border-2 border-gray-300 rounded-lg px-4 py-3 mb-4 focus:outline-none focus:border-[#38B2AC]"
               placeholder="Username"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
+              onKeyPress={(e) => e.key === "Enter" && login()}
             />
             <button
               onClick={login}
-              className="w-full bg-teal-500 text-white py-3 rounded"
+              className="w-full bg-[#38B2AC] hover:bg-[#319795] text-white py-3 rounded-lg font-semibold transition-all"
             >
-              Enter Diary
+              ✅ Login
             </button>
           </div>
         )}
 
         {/* FORM */}
-        {currentUser && isLoggedIn && (
+        {currentUsername && (
           <>
-            <div className="bg-white p-6 rounded-xl shadow mb-6 grid grid-cols-6 gap-4">
-              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-              <input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
-              <input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
-              <input
-                className="col-span-2"
-                placeholder="Activity"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-              />
-              <button onClick={addOrUpdateActivity}>
-                {editingId ? "Update" : "Add"}
-              </button>
+            <div className="bg-white p-6 rounded-xl shadow mb-6">
+              <h2 className="text-2xl font-bold text-[#38B2AC] mb-4">
+                Add New Activity
+              </h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
+                <input
+                  type="date"
+                  value={date}
+                  onChange={(e) => setDate(e.target.value)}
+                  className="border-2 border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:border-[#38B2AC]"
+                />
+                <input
+                  type="time"
+                  value={startTime}
+                  onChange={(e) => setStartTime(e.target.value)}
+                  className="border-2 border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:border-[#38B2AC]"
+                />
+                <input
+                  type="time"
+                  value={endTime}
+                  onChange={(e) => setEndTime(e.target.value)}
+                  className="border-2 border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:border-[#38B2AC]"
+                />
+                <input
+                  className="md:col-span-2 border-2 border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:border-[#38B2AC]"
+                  placeholder="Activity description"
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                />
+                <button
+                  onClick={addOrUpdateActivity}
+                  className="bg-[#38B2AC] hover:bg-[#319795] text-white px-6 py-3 rounded-lg font-semibold transition-all"
+                >
+                  {editingId ? "✏️ Update" : "➕ Add"}
+                </button>
+              </div>
             </div>
 
             {/* LIST */}
-            {activities.map((a) => (
-              <div key={a.id} className="bg-white p-4 rounded shadow mb-2 flex justify-between">
-                <div>
-                  <b>{a.date}</b> {a.startTime}-{a.endTime} — {a.description}
+            {activities.length > 0 ? (
+              <>
+                <div className="space-y-2 mb-6">
+                  {activities.map((a) => (
+                    <div
+                      key={a.id}
+                      className="bg-white p-4 rounded-lg shadow hover:shadow-md transition-shadow flex justify-between items-center"
+                    >
+                      <div>
+                        <b className="text-[#38B2AC]">{a.date}</b>
+                        <span className="ml-2">{a.startTime}</span>
+                        <span className="mx-1">—</span>
+                        <span>{a.endTime}</span>
+                        <p className="text-gray-700 mt-1">{a.description}</p>
+                      </div>
+                      <div className="space-x-2">
+                        <button
+                          onClick={() => editActivity(a.id)}
+                          className="bg-yellow-400 hover:bg-yellow-500 text-white px-4 py-2 rounded-lg font-semibold transition-all"
+                        >
+                          ✏️ Edit
+                        </button>
+                        <button
+                          onClick={() => deleteActivity(a.id)}
+                          className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg font-semibold transition-all"
+                        >
+                          🗑️ Delete
+                        </button>
+                      </div>
+                    </div>
+                  ))}
                 </div>
-                <div className="space-x-2">
-                  <button onClick={() => editActivity(a.id)}>Edit</button>
-                  <button onClick={() => deleteActivity(a.id)}>Delete</button>
+
+                <button
+                  onClick={downloadExcel}
+                  className="bg-[#38B2AC] hover:bg-[#319795] text-white px-8 py-3 rounded-lg font-semibold transition-all"
+                >
+                  💾 Download Excel
+                </button>
+              </>
+            ) : (
+              <div className="flex items-center justify-center h-96">
+                <div className="text-center">
+                  <p className="text-6xl mb-4">📭</p>
+                  <p className="text-gray-500 text-xl">
+                    No activities yet. Add one to get started!
+                  </p>
                 </div>
               </div>
-            ))}
-
-            {activities.length > 0 && (
-              <button
-                onClick={downloadExcel}
-                className="mt-6 bg-teal-500 text-white px-6 py-3 rounded"
-              >
-                Download Excel
-              </button>
             )}
           </>
         )}
