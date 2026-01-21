@@ -194,8 +194,10 @@ function App() {
 
   // Auto save to Firestore when activities change
   useEffect(() => {
-    const save = async () => {
-      if (!currentUser) return;
+    if (!currentUser) return;
+
+    // Debounce the save operation
+    const saveTimeout = setTimeout(async () => {
       const ref = doc(db, "users", currentUser);
       try {
         await setDoc(
@@ -206,11 +208,13 @@ function App() {
           },
           { merge: true }
         );
+        console.log("Activities saved successfully for user:", currentUser);
       } catch (err) {
         console.error("Error saving activities:", err);
       }
-    };
-    save();
+    }, 500); // Wait 500ms after last change before saving
+
+    return () => clearTimeout(saveTimeout);
   }, [activities, currentUser]);
 
   const handleSelectUser = (selectedUsername: string) => {
