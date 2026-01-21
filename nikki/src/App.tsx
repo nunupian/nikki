@@ -179,18 +179,13 @@ function App() {
 
   // Load activities for current user
   useEffect(() => {
-    if (!uid || !currentUser) return;
+    if (!currentUser) return;
 
-    const ref = doc(db, "users", uid);
+    const ref = doc(db, "users", currentUser);
     const unsub = onSnapshot(ref, (snap) => {
       if (snap.exists()) {
         const data = snap.data();
-        const allUsers = (data as any).allUsers || {};
-        if (allUsers[currentUser]) {
-          setActivities(sortActivities(allUsers[currentUser].activities || []));
-        } else {
-          setActivities([]);
-        }
+        setActivities(sortActivities(data.activities || []));
       } else {
         setActivities([]);
       }
@@ -199,23 +194,19 @@ function App() {
     return () => {
       if (unsub) unsub();
     };
-  }, [uid, currentUser]);
+  }, [currentUser]);
 
   // Auto save to Firestore when activities change
   useEffect(() => {
     const save = async () => {
-      if (!uid || !currentUser) return;
-      const ref = doc(db, "users", uid);
+      if (!currentUser) return;
+      const ref = doc(db, "users", currentUser);
       try {
         await setDoc(
           ref,
           {
-            allUsers: {
-              [currentUser]: { 
-                activities,
-                lastUpdated: new Date().toISOString(),
-              },
-            },
+            activities,
+            lastUpdated: new Date().toISOString(),
           },
           { merge: true }
         );
@@ -224,7 +215,7 @@ function App() {
       }
     };
     save();
-  }, [activities, currentUser, uid]);
+  }, [activities, currentUser]);
 
   const handleSelectUser = (selectedUsername: string) => {
     if (!selectedUsername.trim()) {
