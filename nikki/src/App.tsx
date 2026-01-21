@@ -7,6 +7,8 @@ import type { User } from "firebase/auth";
 import { doc, setDoc, onSnapshot } from "firebase/firestore";
 import { db, auth } from "./firebase";
 
+/* ================= TYPES ================= */
+
 interface Activity {
   id: string;
   date: string;
@@ -15,17 +17,21 @@ interface Activity {
   description: string;
 }
 
+/* ================= APP ================= */
+
 function App() {
+  /* ---------- AUTH ---------- */
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [username, setUsername] = useState("");
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+
+  /* ---------- DIARY ---------- */
   const [activities, setActivities] = useState<Activity[]>([]);
   const [date, setDate] = useState("");
   const [startTime, setStartTime] = useState("");
   const [endTime, setEndTime] = useState("");
   const [description, setDescription] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
-
-  const [username, setUsername] = useState("");
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [selectedDateFilter] = useState("all");
 
   const isRemoteUpdate = useRef(false);
 
@@ -117,11 +123,7 @@ function App() {
   /* ================= EXCEL ================= */
 
   const downloadExcel = () => {
-    let data = selectedDateFilter === "all"
-      ? activities
-      : activities.filter((a) => a.date === selectedDateFilter);
-
-    const grouped = groupActivitiesByDate(data);
+    const grouped = groupActivitiesByDate(activities);
     const excelData: any[] = [];
 
     grouped.forEach((acts, dateKey) => {
@@ -156,11 +158,38 @@ function App() {
     XLSX.writeFile(wb, "diary.xlsx");
   };
 
+  /* ================= LOGIN ================= */
+
+  const login = async () => {
+    if (!username.trim()) {
+      alert("Username required");
+      return;
+    }
+
+    const cred = await signInAnonymously(auth);
+
+    await setDoc(
+      doc(db, "users", cred.user.uid),
+      {
+        username,
+        activities: [],
+        createdAt: new Date(),
+      },
+      { merge: true }
+    );
+
+    setIsLoggedIn(true);
+  };
+
   /* ================= FIREBASE ================= */
 
   useEffect(() => {
-    signInAnonymously(auth);
-    return onAuthStateChanged(auth, setCurrentUser);
+    return onAuthStateChanged(auth, (user) => {
+      if (user) {
+        setCurrentUser(user);
+        setIsLoggedIn(true);
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -190,15 +219,6 @@ function App() {
 
   /* ================= UI ================= */
 
-  const getFilteredActivities = () =>
-    selectedDateFilter === "all"
-      ? activities
-      : activities.filter((a) => a.date === selectedDateFilter);
-
-  const getUniqueDates = () =>
-    [...new Set(activities.map((a) => a.date))].sort();
-
-  
   return (
     <div className="h-screen w-screen bg-gradient-to-br from-[#FFF8F0] to-[#FFE8D6] flex flex-col overflow-hidden">
       {/* HEADER */}
@@ -209,20 +229,26 @@ function App() {
 
       <div className="flex-1 overflow-y-auto px-8 py-8">
         {/* LOGIN */}
-        {!currentUser && (
+        {!isLoggedIn && (
           <div className="bg-white p-8 rounded-2xl shadow-lg max-w-md mx-auto mt-20">
+            <h2 className="text-2xl font-bold mb-4">Login</h2>
             <input
-              className="w-full border px-4 py-3 rounded"
+              className="w-full border px-4 py-3 rounded mb-4"
               placeholder="Username"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && setUsername("")}
             />
+            <button
+              onClick={login}
+              className="w-full bg-teal-500 text-white py-3 rounded"
+            >
+              Enter Diary
+            </button>
           </div>
         )}
 
         {/* FORM */}
-        {currentUser && (
+        {currentUser && isLoggedIn && (
           <>
             <div className="bg-white p-6 rounded-xl shadow mb-6 grid grid-cols-6 gap-4">
               <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
@@ -237,15 +263,10 @@ function App() {
               <button onClick={addOrUpdateActivity}>
                 {editingId ? "Update" : "Add"}
               </button>
-              <select>
-  {getUniqueDates().map(date => (
-    <option key={date}>{date}</option>
-  ))}
-</select>
             </div>
 
-            {/* TABLE */}
-            {getFilteredActivities().map((a) => (
+            {/* LIST */}
+            {activities.map((a) => (
               <div key={a.id} className="bg-white p-4 rounded shadow mb-2 flex justify-between">
                 <div>
                   <b>{a.date}</b> {a.startTime}-{a.endTime} — {a.description}
