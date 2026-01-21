@@ -30,6 +30,7 @@ function App() {
   const [endTime, setEndTime] = useState("");
   const [description, setDescription] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [selectedDateFilter, setSelectedDateFilter] = useState<string>("all");
 
   const isRemoteUpdate = useRef(false);
 
@@ -70,6 +71,18 @@ function App() {
       map.get(a.date)!.push(a);
     });
     return map;
+  };
+
+  const getFilteredActivities = () => {
+    if (selectedDateFilter === "all") {
+      return activities;
+    }
+    return activities.filter((a) => a.date === selectedDateFilter);
+  };
+
+  const getUniqueDates = () => {
+    const dates = activities.map((a) => a.date);
+    return [...new Set(dates)].sort();
   };
 
   /* ================= CRUD ================= */
@@ -121,7 +134,12 @@ function App() {
   /* ================= EXCEL ================= */
 
   const downloadExcel = () => {
-    const grouped = groupActivitiesByDate(activities);
+    let dataToExport = activities;
+    if (selectedDateFilter !== "all") {
+      dataToExport = activities.filter((a) => a.date === selectedDateFilter);
+    }
+
+    const grouped = groupActivitiesByDate(dataToExport);
     const excelData: any[] = [];
 
     grouped.forEach((acts, dateKey) => {
@@ -307,53 +325,104 @@ function App() {
               </div>
             </div>
 
+            {/* DATE FILTER */}
+            {activities.length > 0 && (
+              <div className="bg-white p-6 rounded-2xl shadow-lg mb-8">
+                <div className="flex items-center gap-4">
+                  <label className="text-lg font-semibold text-[#38B2AC]">Filter by Date:</label>
+                  <select
+                    value={selectedDateFilter}
+                    onChange={(e) => setSelectedDateFilter(e.target.value)}
+                    className="border-2 border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:border-[#38B2AC] font-semibold"
+                  >
+                    <option value="all">📋 All Dates</option>
+                    {getUniqueDates().map((dateOption) => (
+                      <option key={dateOption} value={dateOption}>
+                        📅 {new Date(dateOption).toLocaleDateString("id-ID", {
+                          weekday: "short",
+                          year: "numeric",
+                          month: "short",
+                          day: "numeric",
+                        })}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            )}
+
             {/* LIST */}
-            {activities.length > 0 ? (
+            {getFilteredActivities().length > 0 ? (
               <>
-                <div className="space-y-2 mb-6">
-                  {activities.map((a) => (
-                    <div
-                      key={a.id}
-                      className="bg-white p-4 rounded-lg shadow hover:shadow-md transition-shadow flex justify-between items-center"
-                    >
-                      <div>
-                        <b className="text-[#38B2AC]">{a.date}</b>
-                        <span className="ml-2">{a.startTime}</span>
-                        <span className="mx-1">—</span>
-                        <span>{a.endTime}</span>
-                        <p className="text-gray-700 mt-1">{a.description}</p>
+                <div className="space-y-4 mb-6">
+                  {Array.from(groupActivitiesByDate(getFilteredActivities())).map(
+                    ([dateKey, dateActivities]) => (
+                      <div key={dateKey}>
+                        {/* DATE HEADER */}
+                        <div className="bg-[#E8F4F3] p-4 rounded-lg mb-2">
+                          <div className="flex items-center gap-3">
+                            <span className="text-2xl">📅</span>
+                            <span className="font-bold text-[#38B2AC] text-lg">
+                              {new Date(dateKey).toLocaleDateString("id-ID", {
+                                weekday: "long",
+                                year: "numeric",
+                                month: "long",
+                                day: "numeric",
+                              })}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* ACTIVITIES FOR THIS DATE */}
+                        {dateActivities.map((a) => (
+                          <div
+                            key={a.id}
+                            className="bg-white p-4 rounded-lg shadow hover:shadow-md transition-shadow flex justify-between items-center mb-2 ml-4"
+                          >
+                            <div>
+                              <span className="font-semibold text-gray-700">{a.startTime}</span>
+                              <span className="mx-2">—</span>
+                              <span className="text-gray-600">{a.endTime}</span>
+                              <p className="text-gray-700 mt-1">{a.description}</p>
+                            </div>
+                            <div className="space-x-2">
+                              <button
+                                onClick={() => editActivity(a.id)}
+                                className="bg-yellow-400 hover:bg-yellow-500 text-white px-4 py-2 rounded-lg font-semibold transition-all"
+                              >
+                                ✏️ Edit
+                              </button>
+                              <button
+                                onClick={() => deleteActivity(a.id)}
+                                className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg font-semibold transition-all"
+                              >
+                                🗑️ Delete
+                              </button>
+                            </div>
+                          </div>
+                        ))}
                       </div>
-                      <div className="space-x-2">
-                        <button
-                          onClick={() => editActivity(a.id)}
-                          className="bg-yellow-400 hover:bg-yellow-500 text-white px-4 py-2 rounded-lg font-semibold transition-all"
-                        >
-                          ✏️ Edit
-                        </button>
-                        <button
-                          onClick={() => deleteActivity(a.id)}
-                          className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg font-semibold transition-all"
-                        >
-                          🗑️ Delete
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+                    )
+                  )}
                 </div>
 
                 <button
                   onClick={downloadExcel}
                   className="bg-[#38B2AC] hover:bg-[#319795] text-white px-8 py-3 rounded-lg font-semibold transition-all"
                 >
-                  💾 Download Excel
+                  💾 Download Excel {selectedDateFilter !== "all" ? `(${selectedDateFilter})` : ""}
                 </button>
               </>
             ) : (
               <div className="flex items-center justify-center h-96">
                 <div className="text-center">
-                  <p className="text-6xl mb-4">📭</p>
+                  <p className="text-6xl mb-4">
+                    {activities.length === 0 ? "📭" : "🔍"}
+                  </p>
                   <p className="text-gray-500 text-xl">
-                    No activities yet. Add one to get started!
+                    {activities.length === 0
+                      ? "No activities yet. Add one to get started!"
+                      : "No activities for this date"}
                   </p>
                 </div>
               </div>
