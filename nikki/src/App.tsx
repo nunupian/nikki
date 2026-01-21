@@ -4,8 +4,6 @@ import * as XLSX from "xlsx";
 
 import { signInAnonymously } from "firebase/auth";
 import {
-  collection,
-  addDoc,
   doc,
   setDoc,
   onSnapshot,
