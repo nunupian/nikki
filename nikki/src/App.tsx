@@ -1,16 +1,14 @@
 // src/App.tsx
-import React, { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import * as XLSX from "xlsx";
 
-import { signInAnonymously } from "firebase/auth";
-import {
-  doc,
-  setDoc,
-  onSnapshot,
-} from "firebase/firestore";
+import { signInAnonymously, onAuthStateChanged } from "firebase/auth";
+import type { User } from "firebase/auth";
+import { doc, setDoc, onSnapshot } from "firebase/firestore";
 import { db, auth } from "./firebase";
 
 interface Activity {
+  id: string;
   date: string;
   startTime: string;
   endTime: string;
@@ -23,442 +21,249 @@ function App() {
   const [startTime, setStartTime] = useState("");
   const [endTime, setEndTime] = useState("");
   const [description, setDescription] = useState("");
-  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+
   const [username, setUsername] = useState("");
-  const [currentUser, setCurrentUser] = useState<string | null>(null);
-  const [selectedDateFilter, setSelectedDateFilter] = useState<string>("all");
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [selectedDateFilter] = useState("all");
+
+  const isRemoteUpdate = useRef(false);
+
+  /* ================= UTIL ================= */
 
   const resetForm = () => {
     setDate("");
     setStartTime("");
     setEndTime("");
     setDescription("");
-    setEditingIndex(null);
+    setEditingId(null);
   };
 
-  const hasTimeConflict = (newActivity: Activity, excludeIndex?: number): boolean => {
-    return activities.some((a, index) => {
-      if (excludeIndex !== undefined && index === excludeIndex) return false;
-      if (a.date !== newActivity.date) return false;
-      
-      const newStart = parseInt(newActivity.startTime.replace(":", ""));
-      const newEnd = parseInt(newActivity.endTime.replace(":", ""));
-      const existStart = parseInt(a.startTime.replace(":", ""));
-      const existEnd = parseInt(a.endTime.replace(":", ""));
-      
-      return (newStart < existEnd && newEnd > existStart);
+  const sortActivities = (acts: Activity[]) =>
+    [...acts].sort((a, b) =>
+      a.date !== b.date
+        ? a.date.localeCompare(b.date)
+        : a.startTime.localeCompare(b.startTime)
+    );
+
+  const hasTimeConflict = (newAct: Activity, excludeId?: string) =>
+    activities.some((a) => {
+      if (excludeId && a.id === excludeId) return false;
+      if (a.date !== newAct.date) return false;
+
+      const ns = +newAct.startTime.replace(":", "");
+      const ne = +newAct.endTime.replace(":", "");
+      const es = +a.startTime.replace(":", "");
+      const ee = +a.endTime.replace(":", "");
+
+      return ns < ee && ne > es;
     });
+
+  const groupActivitiesByDate = (acts: Activity[]) => {
+    const map = new Map<string, Activity[]>();
+    acts.forEach((a) => {
+      if (!map.has(a.date)) map.set(a.date, []);
+      map.get(a.date)!.push(a);
+    });
+    return map;
   };
 
-  const sortActivities = (acts: Activity[]): Activity[] => {
-    return [...acts].sort((a, b) => {
-      const dateCompare = a.date.localeCompare(b.date);
-      if (dateCompare !== 0) return dateCompare;
-      return a.startTime.localeCompare(b.startTime);
-    });
-  };
-
-  const groupActivitiesByDate = (acts: Activity[]): Map<string, Activity[]> => {
-    const grouped = new Map<string, Activity[]>();
-    acts.forEach((activity) => {
-      if (!grouped.has(activity.date)) {
-        grouped.set(activity.date, []);
-      }
-      grouped.get(activity.date)!.push(activity);
-    });
-    return grouped;
-  };
+  /* ================= CRUD ================= */
 
   const addOrUpdateActivity = () => {
-    if (!date || !startTime || !endTime || !description) {
-      alert("Please fill all fields!");
-      return;
-    }
+    if (!date || !startTime || !endTime || !description)
+      return alert("Please fill all fields");
 
-    if (startTime >= endTime) {
-      alert("End time must be after start time!");
-      return;
-    }
+    if (startTime >= endTime)
+      return alert("End time must be after start time");
 
-    const newActivity: Activity = { date, startTime, endTime, description };
+    const newActivity: Activity = {
+      id: editingId ?? crypto.randomUUID(),
+      date,
+      startTime,
+      endTime,
+      description,
+    };
 
-    if (editingIndex !== null) {
-      if (hasTimeConflict(newActivity, editingIndex)) {
-        alert("❌ Waktu bentrok! Ada kegiatan lain pada jam yang sama.");
-        return;
-      }
-      const updated = [...activities];
-      updated[editingIndex] = newActivity;
-      setActivities(sortActivities(updated));
-    } else {
-      if (hasTimeConflict(newActivity)) {
-        alert("❌ Waktu bentrok! Ada kegiatan lain pada jam yang sama.");
-        return;
-      }
-      setActivities(sortActivities([...activities, newActivity]));
-    }
+    if (hasTimeConflict(newActivity, editingId ?? undefined))
+      return alert("❌ Waktu bentrok!");
+
+    setActivities((prev) =>
+      sortActivities(
+        editingId
+          ? prev.map((a) => (a.id === editingId ? newActivity : a))
+          : [...prev, newActivity]
+      )
+    );
 
     resetForm();
   };
 
-  const editActivity = (index: number) => {
-    const a = activities[index];
+  const editActivity = (id: string) => {
+    const a = activities.find((x) => x.id === id);
+    if (!a) return;
     setDate(a.date);
     setStartTime(a.startTime);
     setEndTime(a.endTime);
     setDescription(a.description);
-    setEditingIndex(index);
+    setEditingId(id);
   };
 
-  const deleteActivity = (index: number) => {
+  const deleteActivity = (id: string) => {
     if (!confirm("Delete this activity?")) return;
-    setActivities(activities.filter((_, i) => i !== index));
+    setActivities((prev) => prev.filter((a) => a.id !== id));
   };
+
+  /* ================= EXCEL ================= */
 
   const downloadExcel = () => {
-    let dataToExport: Activity[] = activities;
+    let data = selectedDateFilter === "all"
+      ? activities
+      : activities.filter((a) => a.date === selectedDateFilter);
 
-    if (selectedDateFilter !== "all") {
-      dataToExport = activities.filter((a) => a.date === selectedDateFilter);
-    }
-
-    const grouped = groupActivitiesByDate(dataToExport);
+    const grouped = groupActivitiesByDate(data);
     const excelData: any[] = [];
 
-    Array.from(grouped).forEach(([dateKey, dateActivities]) => {
-      const dateObj = new Date(dateKey);
-      const formattedDate = dateObj.toLocaleDateString('id-ID', {
-        weekday: 'long',
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric'
-      });
-
+    grouped.forEach((acts, dateKey) => {
       excelData.push({
-        Date: formattedDate,
+        Date: new Date(dateKey).toLocaleDateString("id-ID", {
+          weekday: "long",
+          year: "numeric",
+          month: "long",
+          day: "numeric",
+        }),
         "Start Time": "",
         "End Time": "",
         Activity: "",
       });
 
-      dateActivities.forEach((activity) => {
+      acts.forEach((a) =>
         excelData.push({
           Date: "",
-          "Start Time": activity.startTime,
-          "End Time": activity.endTime,
-          Activity: activity.description,
-        });
-      });
+          "Start Time": a.startTime,
+          "End Time": a.endTime,
+          Activity: a.description,
+        })
+      );
 
-      excelData.push({
-        Date: "",
-        "Start Time": "",
-        "End Time": "",
-        Activity: "",
-      });
+      excelData.push({ Date: "", "Start Time": "", "End Time": "", Activity: "" });
     });
 
     const ws = XLSX.utils.json_to_sheet(excelData);
-    ws['!cols'] = [{ wch: 30 }, { wch: 15 }, { wch: 15 }, { wch: 30 }];
+    ws["!cols"] = [{ wch: 30 }, { wch: 15 }, { wch: 15 }, { wch: 30 }];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Diary");
     XLSX.writeFile(wb, "diary.xlsx");
   };
 
-  // Initialize anonymous sign-in once on mount
+  /* ================= FIREBASE ================= */
+
   useEffect(() => {
-    signInAnonymously(auth)
-      .catch((err) => {
-        console.error("signInAnonymously error:", err);
-      });
+    signInAnonymously(auth);
+    return onAuthStateChanged(auth, setCurrentUser);
   }, []);
 
-  // Load activities for current user
   useEffect(() => {
     if (!currentUser) return;
 
-    const ref = doc(db, "users", currentUser);
-    const unsub = onSnapshot(ref, (snap) => {
-      if (snap.exists()) {
-        const data = snap.data();
-        setActivities(sortActivities(data.activities || []));
-      } else {
-        setActivities([]);
-      }
+    const ref = doc(db, "users", currentUser.uid);
+    return onSnapshot(ref, (snap) => {
+      if (!snap.exists()) return;
+      isRemoteUpdate.current = true;
+      setActivities(sortActivities(snap.data().activities || []));
     });
-
-    return () => {
-      if (unsub) unsub();
-    };
   }, [currentUser]);
 
-  // Auto save to Firestore when activities change
   useEffect(() => {
-    if (!currentUser) return;
-
-    // Debounce the save operation
-    const saveTimeout = setTimeout(async () => {
-      const ref = doc(db, "users", currentUser);
-      try {
-        await setDoc(
-          ref,
-          {
-            activities,
-            lastUpdated: new Date().toISOString(),
-          },
-          { merge: true }
-        );
-        console.log("Activities saved successfully for user:", currentUser);
-      } catch (err) {
-        console.error("Error saving activities:", err);
-      }
-    }, 500); // Wait 500ms after last change before saving
-
-    return () => clearTimeout(saveTimeout);
-  }, [activities, currentUser]);
-
-  const handleSelectUser = (selectedUsername: string) => {
-    if (!selectedUsername.trim()) {
-      alert("Please enter a username!");
+    if (!currentUser || isRemoteUpdate.current) {
+      isRemoteUpdate.current = false;
       return;
     }
-    setCurrentUser(selectedUsername);
-    setUsername("");
-    resetForm();
-  };
 
-  const handleLogout = () => {
-    setCurrentUser(null);
-    resetForm();
-  };
+    const ref = doc(db, "users", currentUser.uid);
+    const t = setTimeout(() => {
+      setDoc(ref, { activities }, { merge: true });
+    }, 400);
 
-  const getFilteredActivities = () => {
-    if (selectedDateFilter === "all") {
-      return activities;
-    }
-    return activities.filter((a) => a.date === selectedDateFilter);
-  };
+    return () => clearTimeout(t);
+  }, [activities, currentUser]);
 
-  const getUniqueDates = () => {
-    const dates = activities.map((a) => a.date);
-    return [...new Set(dates)].sort();
-  };
+  /* ================= UI ================= */
 
+  const getFilteredActivities = () =>
+    selectedDateFilter === "all"
+      ? activities
+      : activities.filter((a) => a.date === selectedDateFilter);
+
+  const getUniqueDates = () =>
+    [...new Set(activities.map((a) => a.date))].sort();
+
+  
   return (
     <div className="h-screen w-screen bg-gradient-to-br from-[#FFF8F0] to-[#FFE8D6] flex flex-col overflow-hidden">
-      {/* Header */}
-      <div className="bg-gradient-to-r from-[#38B2AC] to-[#319795] text-white px-8 py-6 shadow-lg flex-shrink-0">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-5xl font-bold">📔 My Daily Diary</h1>
-            <p className="text-lg mt-2 opacity-90">Track your daily activities effortlessly</p>
-          </div>
-          {currentUser && (
-            <div className="text-right">
-              <p className="text-sm opacity-80">Logged in as:</p>
-              <p className="text-2xl font-bold">{currentUser}</p>
-              <button
-                onClick={handleLogout}
-                className="mt-2 bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg font-semibold transition-all"
-              >
-                🚪 Logout
-              </button>
-            </div>
-          )}
-        </div>
+      {/* HEADER */}
+      <div className="bg-gradient-to-r from-[#38B2AC] to-[#319795] text-white px-8 py-6 shadow-lg">
+        <h1 className="text-5xl font-bold">📔 My Daily Diary</h1>
+        <p className="text-lg opacity-90">Track your daily activities</p>
       </div>
 
-      {/* Main Content */}
-      <div className="flex-1 overflow-y-auto px-8 py-8 w-full">
-        {!currentUser ? (
-          // User Selection Screen
+      <div className="flex-1 overflow-y-auto px-8 py-8">
+        {/* LOGIN */}
+        {!currentUser && (
           <div className="bg-white p-8 rounded-2xl shadow-lg max-w-md mx-auto mt-20">
-            <h2 className="text-3xl font-bold text-[#38B2AC] mb-6 text-center">Welcome to Nikki Diary!</h2>
-            <p className="text-gray-600 mb-4 text-center">Enter your username to get started</p>
             <input
-              type="text"
-              placeholder="Enter your username"
+              className="w-full border px-4 py-3 rounded"
+              placeholder="Username"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              onKeyPress={(e) => e.key === "Enter" && handleSelectUser(username)}
-              className="w-full border-2 border-gray-300 rounded-lg px-4 py-3 mb-4 focus:outline-none focus:border-[#38B2AC]"
+              onKeyDown={(e) => e.key === "Enter" && setUsername("")}
             />
-            <button
-              onClick={() => handleSelectUser(username)}
-              className="w-full bg-[#38B2AC] hover:bg-[#319795] text-white px-6 py-3 rounded-lg font-semibold transition-all shadow-md"
-            >
-              ✅ Login
-            </button>
           </div>
-        ) : (
-          <>
+        )}
 
-            {/* Input Form */}
-            <div className="bg-white p-8 rounded-2xl shadow-lg mb-8">
-              <h2 className="text-2xl font-bold text-[#38B2AC] mb-6">Add New Activity</h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
-                <input
-                  type="date"
-                  value={date}
-                  onChange={(e) => setDate(e.target.value)}
-                  className="border-2 border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:border-[#38B2AC]"
-                />
-                <input
-                  type="time"
-                  value={startTime}
-                  onChange={(e) => setStartTime(e.target.value)}
-                  className="border-2 border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:border-[#38B2AC]"
-                />
-                <input
-                  type="time"
-                  value={endTime}
-                  onChange={(e) => setEndTime(e.target.value)}
-                  className="border-2 border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:border-[#38B2AC]"
-                />
-                <input
-                  type="text"
-                  placeholder="Activity description"
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  className="border-2 border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:border-[#38B2AC] md:col-span-2"
-                />
-                <button
-                  onClick={addOrUpdateActivity}
-                  className="bg-[#38B2AC] hover:bg-[#319795] text-white px-6 py-3 rounded-lg font-semibold transition-all shadow-md"
-                >
-                  {editingIndex !== null ? "✏️ Update" : "➕ Add"}
-                </button>
-                {editingIndex !== null && (
-                  <button
-                    onClick={resetForm}
-                    className="bg-gray-400 hover:bg-gray-500 text-white px-6 py-3 rounded-lg font-semibold transition-all shadow-md"
-                  >
-                    ❌ Cancel
-                  </button>
-                )}
-              </div>
+        {/* FORM */}
+        {currentUser && (
+          <>
+            <div className="bg-white p-6 rounded-xl shadow mb-6 grid grid-cols-6 gap-4">
+              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+              <input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
+              <input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
+              <input
+                className="col-span-2"
+                placeholder="Activity"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+              />
+              <button onClick={addOrUpdateActivity}>
+                {editingId ? "Update" : "Add"}
+              </button>
+              <select>
+  {getUniqueDates().map(date => (
+    <option key={date}>{date}</option>
+  ))}
+</select>
             </div>
 
-            {/* Date Filter Dropdown */}
-            {activities.length > 0 && (
-              <div className="bg-white p-6 rounded-2xl shadow-lg mb-8">
-                <div className="flex items-center gap-4">
-                  <label className="text-lg font-semibold text-[#38B2AC]">Filter by Date:</label>
-                  <select
-                    value={selectedDateFilter}
-                    onChange={(e) => setSelectedDateFilter(e.target.value)}
-                    className="border-2 border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:border-[#38B2AC] font-semibold"
-                  >
-                    <option value="all">📋 All Dates</option>
-                    {getUniqueDates().map((dateOption) => (
-                      <option key={dateOption} value={dateOption}>
-                        📅 {new Date(dateOption).toLocaleDateString('id-ID', {
-                          weekday: 'short',
-                          year: 'numeric',
-                          month: 'short',
-                          day: 'numeric'
-                        })}
-                      </option>
-                    ))}
-                  </select>
+            {/* TABLE */}
+            {getFilteredActivities().map((a) => (
+              <div key={a.id} className="bg-white p-4 rounded shadow mb-2 flex justify-between">
+                <div>
+                  <b>{a.date}</b> {a.startTime}-{a.endTime} — {a.description}
+                </div>
+                <div className="space-x-2">
+                  <button onClick={() => editActivity(a.id)}>Edit</button>
+                  <button onClick={() => deleteActivity(a.id)}>Delete</button>
                 </div>
               </div>
-            )}
+            ))}
 
-            {/* Table */}
-            {getFilteredActivities().length > 0 && (
-              <div className="bg-white rounded-2xl shadow-lg overflow-hidden mb-8">
-                <div className="overflow-x-auto">
-                  <table className="w-full">
-                    <thead className="bg-gradient-to-r from-[#38B2AC] to-[#319795] text-white sticky top-0">
-                      <tr>
-                        <th className="px-6 py-4 text-left font-semibold">Date</th>
-                        <th className="px-6 py-4 text-left font-semibold">Start Time</th>
-                        <th className="px-6 py-4 text-left font-semibold">End Time</th>
-                        <th className="px-6 py-4 text-left font-semibold">Activity</th>
-                        <th className="px-6 py-4 text-center font-semibold">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {Array.from(groupActivitiesByDate(getFilteredActivities())).map(([dateKey, dateActivities]) => (
-                        <React.Fragment key={dateKey}>
-                          <tr className="bg-[#E8F4F3] hover:bg-[#E8F4F3]">
-                            <td colSpan={5} className="px-6 py-3">
-                              <div className="flex items-center gap-3">
-                                <span className="text-2xl">📅</span>
-                                <span className="font-bold text-[#38B2AC] text-lg">
-                                  {new Date(dateKey).toLocaleDateString('id-ID', {
-                                    weekday: 'long',
-                                    year: 'numeric',
-                                    month: 'long',
-                                    day: 'numeric'
-                                  })}
-                                </span>
-                              </div>
-                            </td>
-                          </tr>
-                          {dateActivities.map((a, idx) => {
-                            const actualIndex = activities.findIndex(
-                              (act) => act.date === a.date && act.startTime === a.startTime && act.description === a.description
-                            );
-                            return (
-                              <tr key={`${dateKey}-${idx}`} className="border-b border-gray-200 hover:bg-gray-50 transition-colors">
-                                <td className="px-6 py-4 text-gray-600"></td>
-                                <td className="px-6 py-4 font-semibold text-gray-700">{a.startTime}</td>
-                                <td className="px-6 py-4 text-gray-600">{a.endTime}</td>
-                                <td className="px-6 py-4 text-gray-700">{a.description}</td>
-                                <td className="px-6 py-4 text-center space-x-2">
-                                  <button
-                                    onClick={() => editActivity(actualIndex)}
-                                    className="bg-yellow-400 hover:bg-yellow-500 text-white px-4 py-2 rounded-lg font-semibold transition-all inline-block"
-                                  >
-                                    ✏️ Edit
-                                  </button>
-                                  <button
-                                    onClick={() => deleteActivity(actualIndex)}
-                                    className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg font-semibold transition-all inline-block"
-                                  >
-                                    🗑️ Delete
-                                  </button>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </React.Fragment>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-
-            {/* Download Button */}
             {activities.length > 0 && (
               <button
                 onClick={downloadExcel}
-                className="bg-gradient-to-r from-[#38B2AC] to-[#319795] hover:from-[#319795] hover:to-[#2a8a82] text-white px-8 py-4 rounded-lg font-semibold text-lg transition-all shadow-lg mb-8"
+                className="mt-6 bg-teal-500 text-white px-6 py-3 rounded"
               >
-                💾 Download Excel {selectedDateFilter !== "all" ? `(${selectedDateFilter})` : ""}
+                Download Excel
               </button>
-            )}
-
-            {/* Empty State */}
-            {getFilteredActivities().length === 0 && activities.length > 0 && (
-              <div className="flex items-center justify-center h-96">
-                <div className="text-center">
-                  <p className="text-6xl mb-4">🔍</p>
-                  <p className="text-gray-500 text-xl">No activities for this date</p>
-                </div>
-              </div>
-            )}
-
-            {activities.length === 0 && (
-              <div className="flex items-center justify-center h-96">
-                <div className="text-center">
-                  <p className="text-6xl mb-4">📭</p>
-                  <p className="text-gray-500 text-xl">No activities yet. Add one to get started!</p>
-                </div>
-              </div>
             )}
           </>
         )}
