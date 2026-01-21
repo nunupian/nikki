@@ -26,7 +26,6 @@ function App() {
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [username, setUsername] = useState("");
   const [currentUser, setCurrentUser] = useState<string | null>(null);
-  const [uid, setUid] = useState<string | null>(null);
   const [selectedDateFilter, setSelectedDateFilter] = useState<string>("all");
 
   const resetForm = () => {
@@ -169,9 +168,6 @@ function App() {
   // Initialize anonymous sign-in once on mount
   useEffect(() => {
     signInAnonymously(auth)
-      .then((cred) => {
-        setUid(cred.user.uid);
-      })
       .catch((err) => {
         console.error("signInAnonymously error:", err);
       });
