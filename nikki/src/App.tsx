@@ -26,6 +26,7 @@ function App() {
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [username, setUsername] = useState("");
   const [currentUser, setCurrentUser] = useState<string | null>(null);
+  const [uid, setUid] = useState<string | null>(null);
   const [selectedDateFilter, setSelectedDateFilter] = useState<string>("all");
 
   const resetForm = () => {
@@ -168,6 +169,9 @@ function App() {
   // Initialize anonymous sign-in once on mount
   useEffect(() => {
     signInAnonymously(auth)
+      .then((cred) => {
+        setUid(cred.user.uid);
+      })
       .catch((err) => {
         console.error("signInAnonymously error:", err);
       });
@@ -175,13 +179,18 @@ function App() {
 
   // Load activities for current user
   useEffect(() => {
-    if (!currentUser) return;
+    if (!uid || !currentUser) return;
 
-    const ref = doc(db, "users", currentUser);
+    const ref = doc(db, "users", uid);
     const unsub = onSnapshot(ref, (snap) => {
       if (snap.exists()) {
         const data = snap.data();
-        setActivities(sortActivities(data.activities || []));
+        const allUsers = (data as any).allUsers || {};
+        if (allUsers[currentUser]) {
+          setActivities(sortActivities(allUsers[currentUser].activities || []));
+        } else {
+          setActivities([]);
+        }
       } else {
         setActivities([]);
       }
@@ -190,19 +199,23 @@ function App() {
     return () => {
       if (unsub) unsub();
     };
-  }, [currentUser]);
+  }, [uid, currentUser]);
 
   // Auto save to Firestore when activities change
   useEffect(() => {
     const save = async () => {
-      if (!currentUser) return;
-      const ref = doc(db, "users", currentUser);
+      if (!uid || !currentUser) return;
+      const ref = doc(db, "users", uid);
       try {
         await setDoc(
           ref,
           {
-            activities,
-            lastUpdated: new Date().toISOString(),
+            allUsers: {
+              [currentUser]: { 
+                activities,
+                lastUpdated: new Date().toISOString(),
+              },
+            },
           },
           { merge: true }
         );
@@ -211,7 +224,7 @@ function App() {
       }
     };
     save();
-  }, [activities, currentUser]);
+  }, [activities, currentUser, uid]);
 
   const handleSelectUser = (selectedUsername: string) => {
     if (!selectedUsername.trim()) {
