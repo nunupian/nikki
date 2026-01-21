@@ -1,5 +1,5 @@
 // src/App.tsx
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import * as XLSX from "xlsx";
 
 import { signInAnonymously } from "firebase/auth";
@@ -28,6 +28,8 @@ function App() {
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [username, setUsername] = useState("");
   const [currentUser, setCurrentUser] = useState<string | null>(null);
+  const [uid, setUid] = useState<string | null>(null);
+  const [selectedDateFilter, setSelectedDateFilter] = useState<string>("all");
 
   const resetForm = () => {
     setDate("");
@@ -57,6 +59,17 @@ function App() {
       if (dateCompare !== 0) return dateCompare;
       return a.startTime.localeCompare(b.startTime);
     });
+  };
+
+  const groupActivitiesByDate = (acts: Activity[]): Map<string, Activity[]> => {
+    const grouped = new Map<string, Activity[]>();
+    acts.forEach((activity) => {
+      if (!grouped.has(activity.date)) {
+        grouped.set(activity.date, []);
+      }
+      grouped.get(activity.date)!.push(activity);
+    });
+    return grouped;
   };
 
   const addOrUpdateActivity = () => {
@@ -106,52 +119,104 @@ function App() {
   };
 
   const downloadExcel = () => {
-    const ws = XLSX.utils.json_to_sheet(activities);
+    let dataToExport: Activity[] = activities;
+
+    if (selectedDateFilter !== "all") {
+      dataToExport = activities.filter((a) => a.date === selectedDateFilter);
+    }
+
+    const grouped = groupActivitiesByDate(dataToExport);
+    const excelData: any[] = [];
+
+    Array.from(grouped).forEach(([dateKey, dateActivities]) => {
+      const dateObj = new Date(dateKey);
+      const formattedDate = dateObj.toLocaleDateString('id-ID', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+      });
+
+      excelData.push({
+        Date: formattedDate,
+        "Start Time": "",
+        "End Time": "",
+        Activity: "",
+      });
+
+      dateActivities.forEach((activity) => {
+        excelData.push({
+          Date: "",
+          "Start Time": activity.startTime,
+          "End Time": activity.endTime,
+          Activity: activity.description,
+        });
+      });
+
+      excelData.push({
+        Date: "",
+        "Start Time": "",
+        "End Time": "",
+        Activity: "",
+      });
+    });
+
+    const ws = XLSX.utils.json_to_sheet(excelData);
+    ws['!cols'] = [{ wch: 30 }, { wch: 15 }, { wch: 15 }, { wch: 30 }];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Diary");
     XLSX.writeFile(wb, "diary.xlsx");
   };
 
-  // Anonymous sign-in + realtime listener with user grouping
+  // Initialize anonymous sign-in once on mount
   useEffect(() => {
-    let unsub: (() => void) | undefined;
-
     signInAnonymously(auth)
       .then((cred) => {
-        const uid = cred.user.uid;
-        const ref = doc(db, "users", uid);
-
-        unsub = onSnapshot(ref, (snap) => {
-          if (snap.exists()) {
-            const data = snap.data();
-            const allUsers = (data as any).allUsers || {};
-            if (currentUser && allUsers[currentUser]) {
-              setActivities(allUsers[currentUser].activities || []);
-            }
-          }
-        });
+        setUid(cred.user.uid);
       })
       .catch((err) => {
         console.error("signInAnonymously error:", err);
       });
+  }, []);
+
+  // Load activities for current user
+  useEffect(() => {
+    if (!uid || !currentUser) return;
+
+    const ref = doc(db, "users", uid);
+    const unsub = onSnapshot(ref, (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        const allUsers = (data as any).allUsers || {};
+        if (allUsers[currentUser]) {
+          setActivities(sortActivities(allUsers[currentUser].activities || []));
+        } else {
+          setActivities([]);
+        }
+      } else {
+        setActivities([]);
+      }
+    });
 
     return () => {
       if (unsub) unsub();
     };
-  }, [currentUser]);
+  }, [uid, currentUser]);
 
-  // Auto save ke Firestore saat activities berubah, grouped by user
+  // Auto save to Firestore when activities change
   useEffect(() => {
     const save = async () => {
-      if (!auth.currentUser || !currentUser) return;
-      const uid = auth.currentUser.uid;
+      if (!uid || !currentUser) return;
       const ref = doc(db, "users", uid);
       try {
         await setDoc(
           ref,
           {
             allUsers: {
-              [currentUser]: { activities },
+              [currentUser]: { 
+                activities,
+                lastUpdated: new Date().toISOString(),
+              },
             },
           },
           { merge: true }
@@ -161,7 +226,7 @@ function App() {
       }
     };
     save();
-  }, [activities, currentUser]);
+  }, [activities, currentUser, uid]);
 
   const handleSelectUser = (selectedUsername: string) => {
     if (!selectedUsername.trim()) {
@@ -175,8 +240,19 @@ function App() {
 
   const handleLogout = () => {
     setCurrentUser(null);
-    setActivities([]);
     resetForm();
+  };
+
+  const getFilteredActivities = () => {
+    if (selectedDateFilter === "all") {
+      return activities;
+    }
+    return activities.filter((a) => a.date === selectedDateFilter);
+  };
+
+  const getUniqueDates = () => {
+    const dates = activities.map((a) => a.date);
+    return [...new Set(dates)].sort();
   };
 
   return (
@@ -274,8 +350,34 @@ function App() {
               </div>
             </div>
 
-            {/* Table */}
+            {/* Date Filter Dropdown */}
             {activities.length > 0 && (
+              <div className="bg-white p-6 rounded-2xl shadow-lg mb-8">
+                <div className="flex items-center gap-4">
+                  <label className="text-lg font-semibold text-[#38B2AC]">Filter by Date:</label>
+                  <select
+                    value={selectedDateFilter}
+                    onChange={(e) => setSelectedDateFilter(e.target.value)}
+                    className="border-2 border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:border-[#38B2AC] font-semibold"
+                  >
+                    <option value="all">📋 All Dates</option>
+                    {getUniqueDates().map((dateOption) => (
+                      <option key={dateOption} value={dateOption}>
+                        📅 {new Date(dateOption).toLocaleDateString('id-ID', {
+                          weekday: 'short',
+                          year: 'numeric',
+                          month: 'short',
+                          day: 'numeric'
+                        })}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            )}
+
+            {/* Table */}
+            {getFilteredActivities().length > 0 && (
               <div className="bg-white rounded-2xl shadow-lg overflow-hidden mb-8">
                 <div className="overflow-x-auto">
                   <table className="w-full">
@@ -289,27 +391,51 @@ function App() {
                       </tr>
                     </thead>
                     <tbody>
-                      {activities.map((a, index) => (
-                        <tr key={index} className="border-b border-gray-200 hover:bg-gray-50 transition-colors">
-                          <td className="px-6 py-4 font-medium text-gray-700">{a.date}</td>
-                          <td className="px-6 py-4 text-gray-600">{a.startTime}</td>
-                          <td className="px-6 py-4 text-gray-600">{a.endTime}</td>
-                          <td className="px-6 py-4 text-gray-700">{a.description}</td>
-                          <td className="px-6 py-4 text-center space-x-2">
-                            <button
-                              onClick={() => editActivity(index)}
-                              className="bg-yellow-400 hover:bg-yellow-500 text-white px-4 py-2 rounded-lg font-semibold transition-all inline-block"
-                            >
-                              ✏️ Edit
-                            </button>
-                            <button
-                              onClick={() => deleteActivity(index)}
-                              className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg font-semibold transition-all inline-block"
-                            >
-                              🗑️ Delete
-                            </button>
-                          </td>
-                        </tr>
+                      {Array.from(groupActivitiesByDate(getFilteredActivities())).map(([dateKey, dateActivities]) => (
+                        <React.Fragment key={dateKey}>
+                          <tr className="bg-[#E8F4F3] hover:bg-[#E8F4F3]">
+                            <td colSpan={5} className="px-6 py-3">
+                              <div className="flex items-center gap-3">
+                                <span className="text-2xl">📅</span>
+                                <span className="font-bold text-[#38B2AC] text-lg">
+                                  {new Date(dateKey).toLocaleDateString('id-ID', {
+                                    weekday: 'long',
+                                    year: 'numeric',
+                                    month: 'long',
+                                    day: 'numeric'
+                                  })}
+                                </span>
+                              </div>
+                            </td>
+                          </tr>
+                          {dateActivities.map((a, idx) => {
+                            const actualIndex = activities.findIndex(
+                              (act) => act.date === a.date && act.startTime === a.startTime && act.description === a.description
+                            );
+                            return (
+                              <tr key={`${dateKey}-${idx}`} className="border-b border-gray-200 hover:bg-gray-50 transition-colors">
+                                <td className="px-6 py-4 text-gray-600"></td>
+                                <td className="px-6 py-4 font-semibold text-gray-700">{a.startTime}</td>
+                                <td className="px-6 py-4 text-gray-600">{a.endTime}</td>
+                                <td className="px-6 py-4 text-gray-700">{a.description}</td>
+                                <td className="px-6 py-4 text-center space-x-2">
+                                  <button
+                                    onClick={() => editActivity(actualIndex)}
+                                    className="bg-yellow-400 hover:bg-yellow-500 text-white px-4 py-2 rounded-lg font-semibold transition-all inline-block"
+                                  >
+                                    ✏️ Edit
+                                  </button>
+                                  <button
+                                    onClick={() => deleteActivity(actualIndex)}
+                                    className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg font-semibold transition-all inline-block"
+                                  >
+                                    🗑️ Delete
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </React.Fragment>
                       ))}
                     </tbody>
                   </table>
@@ -323,11 +449,20 @@ function App() {
                 onClick={downloadExcel}
                 className="bg-gradient-to-r from-[#38B2AC] to-[#319795] hover:from-[#319795] hover:to-[#2a8a82] text-white px-8 py-4 rounded-lg font-semibold text-lg transition-all shadow-lg mb-8"
               >
-                💾 Download Excel
+                💾 Download Excel {selectedDateFilter !== "all" ? `(${selectedDateFilter})` : ""}
               </button>
             )}
 
             {/* Empty State */}
+            {getFilteredActivities().length === 0 && activities.length > 0 && (
+              <div className="flex items-center justify-center h-96">
+                <div className="text-center">
+                  <p className="text-6xl mb-4">🔍</p>
+                  <p className="text-gray-500 text-xl">No activities for this date</p>
+                </div>
+              </div>
+            )}
+
             {activities.length === 0 && (
               <div className="flex items-center justify-center h-96">
                 <div className="text-center">
