@@ -16,6 +16,11 @@ interface Activity {
   description: string;
 }
 
+/* ================= CONSTANTS ================= */
+
+const SESSION_TIMEOUT = 30 * 60 * 1000; // 30 minutes
+const STORAGE_KEY = "nikki_diary_user";
+
 /* ================= APP ================= */
 
 function App() {
@@ -33,6 +38,8 @@ function App() {
   const [selectedDateFilter, setSelectedDateFilter] = useState<string>("all");
 
   const isRemoteUpdate = useRef(false);
+  const sessionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastActivityRef = useRef<number>(Date.now());
 
   /* ================= UTIL ================= */
 
@@ -85,55 +92,165 @@ function App() {
     return [...new Set(dates)].sort();
   };
 
+  const getNextDate = (currentDate: string): string => {
+    const date = new Date(currentDate);
+    date.setDate(date.getDate() + 1);
+    return date.toISOString().split("T")[0];
+  };
+
+  /* ================= SESSION MANAGEMENT ================= */
+
+  const resetSessionTimer = () => {
+    lastActivityRef.current = Date.now();
+    
+    if (sessionTimeoutRef.current) {
+      clearTimeout(sessionTimeoutRef.current);
+    }
+
+    sessionTimeoutRef.current = setTimeout(() => {
+      handleAutoLogout();
+    }, SESSION_TIMEOUT);
+  };
+
+  const handleAutoLogout = () => {
+    alert("Session expired. Please login again.");
+    logout();
+  };
+
+  const saveSession = (user: string) => {
+    localStorage.setItem(STORAGE_KEY, user);
+  };
+
+  const restoreSession = (): string | null => {
+    return localStorage.getItem(STORAGE_KEY);
+  };
+
+  const clearSession = () => {
+    localStorage.removeItem(STORAGE_KEY);
+    if (sessionTimeoutRef.current) {
+      clearTimeout(sessionTimeoutRef.current);
+    }
+  };
+
   /* ================= CRUD ================= */
 
   const addOrUpdateActivity = () => {
+    resetSessionTimer();
+    
     if (!date || !startTime || !endTime || !description)
       return alert("Please fill all fields");
 
-    if (startTime >= endTime)
-      return alert("End time must be after start time");
+    if (startTime === endTime)
+      return alert("Start and end time cannot be the same");
 
-    const newActivity: Activity = {
-      id: editingId ?? crypto.randomUUID(),
-      date,
-      startTime,
-      endTime,
-      description,
-    };
+    // Check if activity crosses midnight
+    const isCrossingMidnight = startTime > endTime;
 
-    if (hasTimeConflict(newActivity, editingId ?? undefined))
-      return alert("❌ Waktu bentrok!");
+    const newActivities: Activity[] = [];
 
-    setActivities((prev) =>
-      sortActivities(
-        editingId
-          ? prev.map((a) => (a.id === editingId ? newActivity : a))
-          : [...prev, newActivity]
-      )
-    );
+    if (isCrossingMidnight) {
+      // Split into two activities
+      const activity1: Activity = {
+        id: editingId ?? crypto.randomUUID(),
+        date,
+        startTime,
+        endTime: "23:59",
+        description: `${description} (Part 1)`,
+      };
+
+      const nextDate = getNextDate(date);
+      const activity2: Activity = {
+        id: crypto.randomUUID(),
+        date: nextDate,
+        startTime: "00:00",
+        endTime,
+        description: `${description} (Part 2)`,
+      };
+
+      newActivities.push(activity1, activity2);
+    } else {
+      // Normal activity within same day
+      const newActivity: Activity = {
+        id: editingId ?? crypto.randomUUID(),
+        date,
+        startTime,
+        endTime,
+        description,
+      };
+
+      if (hasTimeConflict(newActivity, editingId ?? undefined))
+        return alert("❌ Waktu bentrok!");
+
+      newActivities.push(newActivity);
+    }
+
+    setActivities((prev) => {
+      let updated = prev;
+
+      if (editingId) {
+        // Remove old activity when editing
+        updated = prev.filter((a) => a.id !== editingId);
+      }
+
+      return sortActivities([...updated, ...newActivities]);
+    });
 
     resetForm();
   };
 
   const editActivity = (id: string) => {
+    resetSessionTimer();
     const a = activities.find((x) => x.id === id);
     if (!a) return;
-    setDate(a.date);
-    setStartTime(a.startTime);
-    setEndTime(a.endTime);
-    setDescription(a.description);
+    
+    let editDescription = a.description;
+    let editStartTime = a.startTime;
+    let editEndTime = a.endTime;
+
+    // Handle split activities (remove " (Part 1)" or " (Part 2)" suffix)
+    if (editDescription.includes(" (Part 1)") || editDescription.includes(" (Part 2)")) {
+      editDescription = editDescription.replace(" (Part 1)", "").replace(" (Part 2)", "");
+      
+      // If editing part 2, adjust start date to be the day before
+      if (a.description.includes(" (Part 2)")) {
+        const prevDate = new Date(a.date);
+        prevDate.setDate(prevDate.getDate() - 1);
+        setDate(prevDate.toISOString().split("T")[0]);
+        editStartTime = "23:00"; // Default start for edited midnight-crossing activity
+      } else {
+        setDate(a.date);
+      }
+    } else {
+      setDate(a.date);
+    }
+
+    setStartTime(editStartTime);
+    setEndTime(editEndTime);
+    setDescription(editDescription);
     setEditingId(id);
   };
 
   const deleteActivity = (id: string) => {
+    resetSessionTimer();
     if (!confirm("Delete this activity?")) return;
-    setActivities((prev) => prev.filter((a) => a.id !== id));
+    
+    // If deleting a split activity, delete both parts
+    const actToDelete = activities.find((a) => a.id === id);
+    const baseDescription = actToDelete?.description.replace(" (Part 1)", "").replace(" (Part 2)", "");
+    
+    setActivities((prev) =>
+      prev.filter((a) => {
+        const cleanDesc = a.description.replace(" (Part 1)", "").replace(" (Part 2)", "");
+        // Delete if exact match or if it's a part of the same split activity
+        return !(a.id === id || (baseDescription && cleanDesc === baseDescription && a.description.includes("(Part")));
+      })
+    );
   };
 
   /* ================= EXCEL ================= */
 
   const downloadExcel = () => {
+    resetSessionTimer();
     let dataToExport = activities;
     if (selectedDateFilter !== "all") {
       dataToExport = activities.filter((a) => a.date === selectedDateFilter);
@@ -186,7 +303,9 @@ function App() {
       await signInAnonymously(auth);
       const cleanUsername = username.trim().toLowerCase();
       setCurrentUsername(cleanUsername);
+      saveSession(cleanUsername);
       setUsername("");
+      resetSessionTimer();
     } catch (err) {
       console.error("Login error:", err);
       alert("Failed to login. Please try again.");
@@ -194,6 +313,7 @@ function App() {
   };
 
   const logout = () => {
+    clearSession();
     setCurrentUsername(null);
     setActivities([]);
     resetForm();
@@ -205,6 +325,15 @@ function App() {
     signInAnonymously(auth).catch((err) => {
       console.error("Auth error:", err);
     });
+  }, []);
+
+  // Restore session on app load
+  useEffect(() => {
+    const savedUsername = restoreSession();
+    if (savedUsername) {
+      setCurrentUsername(savedUsername);
+      resetSessionTimer();
+    }
   }, []);
 
   useEffect(() => {
@@ -231,6 +360,38 @@ function App() {
 
     return () => clearTimeout(t);
   }, [activities, currentUsername]);
+
+  // Add activity listeners to reset timeout
+  useEffect(() => {
+    if (!currentUsername) return;
+
+    const handleActivity = () => {
+      resetSessionTimer();
+    };
+
+    window.addEventListener("mousemove", handleActivity);
+    window.addEventListener("keypress", handleActivity);
+    window.addEventListener("click", handleActivity);
+    window.addEventListener("scroll", handleActivity);
+    window.addEventListener("touchstart", handleActivity);
+
+    return () => {
+      window.removeEventListener("mousemove", handleActivity);
+      window.removeEventListener("keypress", handleActivity);
+      window.removeEventListener("click", handleActivity);
+      window.removeEventListener("scroll", handleActivity);
+      window.removeEventListener("touchstart", handleActivity);
+    };
+  }, [currentUsername]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (sessionTimeoutRef.current) {
+        clearTimeout(sessionTimeoutRef.current);
+      }
+    };
+  }, []);
 
   /* ================= UI ================= */
 
